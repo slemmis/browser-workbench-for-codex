@@ -2,7 +2,7 @@
 
 Browser Workbench for Codex is an independent Codex marketplace and plugin for Playwright-powered browser inspection, testing, and controlled interaction on Linux and WSL. It bundles a pinned `@playwright/mcp` server, an isolated-by-default launcher, diagnostics, and real-browser smoke tests.
 
-This project is published by Mikael Parkdahl for Ekehöjd Assessment & Education AB. It is not an OpenAI product, is not endorsed by OpenAI, and does not include or require OpenAI credentials.
+This project is published by slemmis (Mikael Parkdahl). It is not an OpenAI product, is not endorsed by OpenAI, and does not include or require OpenAI credentials.
 
 ## Prerequisites
 
