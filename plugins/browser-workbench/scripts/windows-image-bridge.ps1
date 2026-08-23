@@ -5,15 +5,71 @@ param(
 
     [Parameter(Position = 1)]
     [AllowEmptyString()]
-    [string]$Path
+    [string]$Path,
+
+    [Parameter(Mandatory = $true, Position = 2)]
+    [ValidateRange(1, 2147483647)]
+    [int64]$MaxEncodedBytes,
+
+    [Parameter(Mandatory = $true, Position = 3)]
+    [ValidateRange(1, 2147483647)]
+    [int]$MaxDimension,
+
+    [Parameter(Mandatory = $true, Position = 4)]
+    [ValidateRange(1, 2147483647)]
+    [int64]$MaxPixels
 )
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = "Stop"
 
-$MaxEncodedBytes = 25 * 1024 * 1024
-$MaxDimension = 20000
-$MaxPixels = 25000000
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+using System.Text;
+
+public static class BrowserWorkbenchSafeFile {
+    public const uint GENERIC_READ = 0x80000000;
+    public const uint FILE_SHARE_READ = 0x00000001;
+    public const uint OPEN_EXISTING = 3;
+    public const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+    public const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
+    public const uint FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
+    public const uint FILE_TYPE_DISK = 0x0001;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BY_HANDLE_FILE_INFORMATION {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern SafeFileHandle CreateFile(
+        string fileName, uint desiredAccess, uint shareMode, IntPtr securityAttributes,
+        uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetFileInformationByHandle(
+        SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint GetFileType(SafeFileHandle handle);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetFinalPathNameByHandle(
+        SafeFileHandle handle, StringBuilder path, uint pathLength, uint flags);
+}
+'@
 
 function Assert-NoReparseParents {
     param([string]$FullPath)
@@ -123,29 +179,54 @@ function Get-FileImage {
     }
     Assert-NoReparseParents $fullPath
 
-    try {
-        $items = @(Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop)
-    } catch {
-        Stop-Bridge "the requested file could not be opened"
-    }
-    if ($items.Count -ne 1) {
-        Stop-Bridge "the requested path did not resolve to one file"
-    }
-    $file = $items[0]
-    if ($file.PSIsContainer -or (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
-        Stop-Bridge "the requested path is not a regular local file"
-    }
-    if ([int64]$file.Length -gt $MaxEncodedBytes) {
-        Stop-Bridge "source file exceeds the ${MaxEncodedBytes} byte limit"
-    }
-    $extension = [System.IO.Path]::GetExtension($file.Name).ToLowerInvariant()
+    $extension = [System.IO.Path]::GetExtension($fullPath).ToLowerInvariant()
     if ($extension -eq '.webp') {
         Stop-Bridge "WebP is unsupported by System.Drawing in Windows PowerShell 5.1"
     }
 
+    # FILE_SHARE_READ denies writers and deletion/rename until decoding is done.
+    # OPEN_REPARSE_POINT ensures the final component itself is never followed.
+    $handle = [BrowserWorkbenchSafeFile]::CreateFile(
+        $fullPath,
+        [BrowserWorkbenchSafeFile]::GENERIC_READ,
+        [BrowserWorkbenchSafeFile]::FILE_SHARE_READ,
+        [IntPtr]::Zero,
+        [BrowserWorkbenchSafeFile]::OPEN_EXISTING,
+        [BrowserWorkbenchSafeFile]::FILE_FLAG_OPEN_REPARSE_POINT,
+        [IntPtr]::Zero)
+    if ($null -eq $handle -or $handle.IsInvalid) {
+        if ($null -ne $handle) { $handle.Dispose() }
+        Stop-Bridge "the requested file could not be opened safely"
+    }
+
     $image = $null
+    $stream = $null
     try {
-        $image = [System.Drawing.Image]::FromFile($file.FullName)
+        $information = New-Object BrowserWorkbenchSafeFile+BY_HANDLE_FILE_INFORMATION
+        if (-not [BrowserWorkbenchSafeFile]::GetFileInformationByHandle($handle, [ref]$information)) {
+            Stop-Bridge "the requested file handle could not be inspected"
+        }
+        if ([BrowserWorkbenchSafeFile]::GetFileType($handle) -ne [BrowserWorkbenchSafeFile]::FILE_TYPE_DISK -or
+            ($information.FileAttributes -band [BrowserWorkbenchSafeFile]::FILE_ATTRIBUTE_DIRECTORY) -ne 0 -or
+            ($information.FileAttributes -band [BrowserWorkbenchSafeFile]::FILE_ATTRIBUTE_REPARSE_POINT) -ne 0) {
+            Stop-Bridge "the requested path is not a regular local file"
+        }
+        $pathBuffer = New-Object System.Text.StringBuilder 32768
+        $pathLength = [BrowserWorkbenchSafeFile]::GetFinalPathNameByHandle($handle, $pathBuffer, $pathBuffer.Capacity, 0)
+        if ($pathLength -eq 0 -or $pathLength -ge $pathBuffer.Capacity) {
+            Stop-Bridge "the opened file path could not be verified"
+        }
+        $openedPath = $pathBuffer.ToString()
+        if ($openedPath.StartsWith('\\?\')) { $openedPath = $openedPath.Substring(4) }
+        if (-not [string]::Equals($openedPath, $fullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Stop-Bridge "the requested path resolved through a reparse point"
+        }
+
+        $stream = New-Object System.IO.FileStream($handle, [System.IO.FileAccess]::Read, 65536, $false)
+        if ($stream.Length -gt $MaxEncodedBytes) {
+            Stop-Bridge "source file exceeds the ${MaxEncodedBytes} byte limit"
+        }
+        $image = [System.Drawing.Image]::FromStream($stream, $true, $true)
         $bytes = Convert-ImageToPng $image
     } catch {
         if ($_.Exception.Message -like 'browser-workbench Windows image bridge:*') {
@@ -155,6 +236,11 @@ function Get-FileImage {
     } finally {
         if ($null -ne $image) {
             $image.Dispose()
+        }
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        } elseif ($null -ne $handle) {
+            $handle.Dispose()
         }
     }
     return ,$bytes

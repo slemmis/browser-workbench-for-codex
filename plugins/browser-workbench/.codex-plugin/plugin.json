@@ -1,6 +1,6 @@
 {
   "name": "browser-workbench",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Browser inspection, testing, and opt-in Windows screenshot import for Codex on Linux and WSL.",
   "author": {
     "name": "Mikael Parkdahl",
@@ -33,7 +33,7 @@
       "Opt-in Windows screenshot import",
       "Visual evidence"
     ],
-    "websiteURL": "https://github.com/slemmis",
+    "websiteURL": "https://github.com/slemmis/browser-workbench-for-codex",
     "brandColor": "#2563EB",
     "defaultPrompt": [
       "Inspect this page with an accessibility snapshot and relevant console errors.",

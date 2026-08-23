@@ -8,8 +8,9 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  hermetic:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -19,45 +20,195 @@ jobs:
         with:
           node-version: 20
 
-      - name: Validate manifests, scripts, and release packaging
+      - name: Install pinned ShellCheck
+        shell: bash
+        env:
+          SHELLCHECK_VERSION: "0.10.0"
+          SHELLCHECK_SHA256: "6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87"
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/shellcheck.tar.xz"
+          install_root="$RUNNER_TEMP/shellcheck"
+          curl --fail --silent --show-error --location \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            --output "$archive"
+          printf '%s  %s\n' "$SHELLCHECK_SHA256" "$archive" | sha256sum --check --strict
+          mkdir -p "$install_root"
+          tar -xJf "$archive" -C "$install_root" --strip-components=1
+          [[ "$($install_root/shellcheck --version | awk '/^version:/ {print $2}')" == "$SHELLCHECK_VERSION" ]]
+          printf '%s\n' "$install_root" >> "$GITHUB_PATH"
+
+      - name: Validate schemas and static syntax
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m json.tool .agents/plugins/marketplace.json >/dev/null
-          python3 -m json.tool plugins/browser-workbench/.codex-plugin/plugin.json >/dev/null
-          python3 -m json.tool plugins/browser-workbench/.mcp.json >/dev/null
-          bash -n plugins/browser-workbench/scripts/*.sh
-          node --check plugins/browser-workbench/scripts/validate-png.mjs
-          node --check plugins/browser-workbench/scripts/test-fixtures/fake-powershell.js
-          node --check plugins/browser-workbench/scripts/test-fixtures/generate-png.mjs
-          python3 -m py_compile plugins/browser-workbench/scripts/mcp_smoke_test.py
+          python3 plugins/browser-workbench/scripts/validate-plugin-contract.py
+          bash -n plugins/browser-workbench/scripts/*.sh plugins/browser-workbench/scripts/runtime/*.sh
+          [[ "$(shellcheck --version | awk '/^version:/ {print $2}')" == "0.10.0" ]]
+          shellcheck --severity=warning --exclude=SC2034,SC2154 \
+            plugins/browser-workbench/scripts/*.sh plugins/browser-workbench/scripts/runtime/*.sh
+          while IFS= read -r -d '' script; do node --check "$script"; done < <(
+            find plugins/browser-workbench/scripts -type f \( -name '*.js' -o -name '*.mjs' \) -print0
+          )
+          python3 -W error -m py_compile plugins/browser-workbench/scripts/*.py
+          git show --check --format= HEAD
+
+      - name: Run hermetic behavior tests
+        shell: bash
+        env:
+          BROWSER_WORKBENCH_RUN_WINDOWS_INTEGRATION: "0"
+          PYTHONDEVMODE: "1"
+          PYTHONWARNINGS: "error"
+        run: |
+          set -euo pipefail
+          python3 plugins/browser-workbench/scripts/mcp-startup-environment-test.py
+          python3 -m unittest discover -s plugins/browser-workbench/scripts -p 'mcp_smoke_client_test.py' -v
+          bash plugins/browser-workbench/scripts/launch-mcp-test.sh
           bash plugins/browser-workbench/scripts/windows-image-bridge-test.sh
+          bash plugins/browser-workbench/scripts/package-marketplace-test.sh
+
+      - name: Verify committed package completeness and reproducibility
+        shell: bash
+        run: |
+          set -euo pipefail
           package_one="$RUNNER_TEMP/browser-workbench-marketplace-one.zip"
           package_two="$RUNNER_TEMP/browser-workbench-marketplace-two.zip"
           bash plugins/browser-workbench/scripts/package-marketplace.sh "$package_one"
           bash plugins/browser-workbench/scripts/package-marketplace.sh "$package_two"
           cmp "$package_one" "$package_two"
           python3 - "$package_one" <<'PY'
+          import json
+          import stat
           import sys
           import zipfile
 
           archive_path = sys.argv[1]
           with zipfile.ZipFile(archive_path) as archive:
               names = archive.namelist()
-              forbidden = ("/.git/", "/.cache/", "/.runtime/", "/browsers/", "/profiles/", "/output/", "/__pycache__/")
+              root = names[0].split("/", 1)[0]
+              manifest_name = f"{root}/plugins/browser-workbench/.codex-plugin/plugin.json"
+              manifest = json.loads(archive.read(manifest_name))
+              assert manifest["version"] == "0.2.1", manifest
+              required = {
+                  f"{root}/plugins/browser-workbench/scripts/validate-plugin-contract.py",
+                  f"{root}/plugins/browser-workbench/scripts/codex-consumer-smoke-test.py",
+                  f"{root}/plugins/browser-workbench/scripts/PSScriptAnalyzerSettings.psd1",
+                  f"{root}/plugins/browser-workbench/scripts/windows-image-bridge-native-test.ps1",
+                  f"{root}/plugins/browser-workbench/scripts/runtime/package-lock.json",
+                  f"{root}/plugins/browser-workbench/scripts/runtime/validate-graph.mjs",
+                  f"{root}/plugins/browser-workbench/skills/browser-workbench/agents/openai.yaml",
+              }
+              assert required.issubset(names), sorted(required - set(names))
+              forbidden = ("/.git/", "/.cache/", "/node_modules/", "/browsers/", "/profiles/", "/output/", "/__pycache__/")
               assert all(not any(token in name for token in forbidden) for name in names), names
-              assert all(not name.endswith((".env", ".secret", ".secrets")) for name in names), names
-              assert any(name.endswith("/plugins/browser-workbench/.codex-plugin/plugin.json") for name in names), names
+              for info in archive.infolist():
+                  if info.is_dir():
+                      continue
+                  mode = stat.S_IMODE(info.external_attr >> 16)
+                  executable_names = {
+                      "codex-consumer-smoke-test.py", "doctor.sh", "launch-mcp.sh", "launch-mcp-test.sh", "mcp-smoke-test.sh",
+                      "mcp-startup-environment-test.py",
+                      "mcp_smoke_test.py", "mcp_smoke_client_test.py", "mcp_smoke_fake_server_fixture.py",
+                      "package-marketplace.sh", "package-marketplace-test.sh", "setup.sh", "smoke-test.sh",
+                      "validate-plugin-contract.py", "windows-image-bridge-test.sh", "windows-image-bridge.sh",
+                  }
+                  executable = info.filename.rsplit("/", 1)[-1] in executable_names
+                  expected = 0o755 if executable else 0o644
+                  assert mode == expected, (info.filename, oct(mode), oct(expected))
           PY
 
-      - name: Run browser and MCP smoke tests
+  windows-powershell:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install pinned PSScriptAnalyzer and test the native Windows bridge
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($PSVersionTable.PSEdition -ne "Desktop" -or $PSVersionTable.PSVersion.Major -ne 5) {
+            throw "Windows PowerShell 5.1 is required"
+          }
+          $version = "1.24.0"
+          $expectedHash = "B8yVwiGkpN9LU8q7cBZHgBtBIAKgW+FbpVA/ZtSHD65K1FWFTT7nSVfehKL2OuoyufPf8VNcaRfHUTB3Rb3RZQ=="
+          $package = Join-Path $env:RUNNER_TEMP "PSScriptAnalyzer.nupkg"
+          $zip = Join-Path $env:RUNNER_TEMP "PSScriptAnalyzer.zip"
+          $moduleRoot = Join-Path $env:RUNNER_TEMP "PSScriptAnalyzer"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://www.powershellgallery.com/api/v2/package/PSScriptAnalyzer/$version" -OutFile $package
+          $actualHash = [Convert]::ToBase64String(
+            [Security.Cryptography.SHA512]::Create().ComputeHash([IO.File]::ReadAllBytes($package))
+          )
+          if ($actualHash -ne $expectedHash) { throw "PSScriptAnalyzer package integrity mismatch" }
+          Copy-Item -LiteralPath $package -Destination $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $moduleRoot
+          Import-Module (Join-Path $moduleRoot "PSScriptAnalyzer.psd1") -Force
+          if ((Get-Module PSScriptAnalyzer).Version.ToString() -ne $version) {
+            throw "unexpected PSScriptAnalyzer version"
+          }
+          $issues = @(Invoke-ScriptAnalyzer `
+            -Path .\plugins\browser-workbench\scripts `
+            -Recurse `
+            -Settings .\plugins\browser-workbench\scripts\PSScriptAnalyzerSettings.psd1)
+          if ($issues.Count -ne 0) {
+            $issues | Format-Table -AutoSize | Out-String | Write-Error
+            throw "PSScriptAnalyzer found $($issues.Count) issue(s)"
+          }
+          & .\plugins\browser-workbench\scripts\windows-image-bridge-native-test.ps1
+
+  codex-consumer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+
+      - name: Install pinned Codex CLI and consume the local marketplace in isolation
+        shell: bash
+        env:
+          CODEX_VERSION: "0.147.0"
+          CODEX_INTEGRITY: "sha512-EQLEXecAG2ptxI7UpBMo2TR/ga5596/c/OsYF/0LoUDh5JANZ7IoGqlzBEWbuEVQ76JePIbtTW/ihCkp1a7Z3w=="
+          CODEX_LINUX_X64_INTEGRITY: "sha512-0W9MBxPpWW0cSkNqrTDN2jR7rzzT7oNMhQY5446lT2Lw5cz5yhDTck4Va9rjkQEm+HlFzP/dmEMSZbXfJsINmw=="
+        run: |
+          set -euo pipefail
+          [[ "$(npm view "@openai/codex@$CODEX_VERSION" dist.integrity)" == "$CODEX_INTEGRITY" ]]
+          [[ "$(npm view "@openai/codex@$CODEX_VERSION-linux-x64" dist.integrity)" == "$CODEX_LINUX_X64_INTEGRITY" ]]
+          package_json="$(npm pack "@openai/codex@$CODEX_VERSION" --json --pack-destination "$RUNNER_TEMP")"
+          package_file="$RUNNER_TEMP/$(node -e 'const value=JSON.parse(process.argv[1]); process.stdout.write(value[0].filename)' "$package_json")"
+          actual_integrity="sha512-$(openssl dgst -sha512 -binary "$package_file" | openssl base64 -A)"
+          [[ "$actual_integrity" == "$CODEX_INTEGRITY" ]]
+          npm install --global --prefix "$RUNNER_TEMP/codex-cli" --ignore-scripts "$package_file"
+          codex_bin="$RUNNER_TEMP/codex-cli/bin/codex"
+          [[ "$($codex_bin --version)" == "codex-cli $CODEX_VERSION" ]]
+          BROWSER_WORKBENCH_CODEX_BIN="$codex_bin" \
+            timeout 2m python3 plugins/browser-workbench/scripts/codex-consumer-smoke-test.py
+
+  browser-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+
+      - name: Run bounded real setup, browser, and MCP smoke tests
         working-directory: plugins/browser-workbench
         shell: bash
         env:
           CI: "true"
         run: |
           set -euo pipefail
-          bash scripts/setup.sh
-          bash scripts/doctor.sh
-          bash scripts/smoke-test.sh
-          bash scripts/mcp-smoke-test.sh
+          timeout 10m bash scripts/setup.sh
+          timeout 1m bash scripts/doctor.sh
+          timeout 3m bash scripts/smoke-test.sh
+          timeout 3m bash scripts/mcp-smoke-test.sh

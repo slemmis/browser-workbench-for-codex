@@ -6,10 +6,11 @@ const args = process.argv.slice(2);
 const fileArgumentIndex = args.indexOf("-File");
 const mode = fileArgumentIndex >= 0 ? args[fileArgumentIndex + 2] : "";
 const inputPath = fileArgumentIndex >= 0 ? args[fileArgumentIndex + 3] ?? "" : "";
+const limits = fileArgumentIndex >= 0 ? args.slice(fileArgumentIndex + 4, fileArgumentIndex + 7) : [];
 if (process.env.FAKE_POWERSHELL_LOG) {
   fs.appendFileSync(
     process.env.FAKE_POWERSHELL_LOG,
-    `${JSON.stringify({ args, mode, input_path: inputPath })}\n`,
+    `${JSON.stringify({ args, mode, input_path: inputPath, limits })}\n`,
     { mode: 0o600 },
   );
 }

@@ -3,3 +3,15 @@ interface:
   short_description: "Inspect browsers and import Windows screenshots safely on WSL"
   brand_color: "#2563EB"
   default_prompt: "Use $browser-workbench to inspect a browser page or explicitly import a Windows screenshot into WSL."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "browser-workbench"
+      description: "Bundled Playwright MCP server"
+    - type: "cli"
+      value: "node"
+      description: "Node.js 20 or newer for the pinned runtime and PNG validation"
+    - type: "cli"
+      value: "npm"
+      description: "Install the locked runtime and pinned Chromium on first use"

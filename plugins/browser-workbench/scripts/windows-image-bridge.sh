@@ -7,10 +7,6 @@ export LC_ALL=C
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 POWERSHELL_SOURCE="$SCRIPT_DIR/windows-image-bridge.ps1"
 PNG_VALIDATOR="$SCRIPT_DIR/validate-png.mjs"
-MAX_SOURCE_BYTES=$((25 * 1024 * 1024))
-MAX_ENCODED_BYTES=$MAX_SOURCE_BYTES
-MAX_DIMENSION=20000
-MAX_PIXELS=25000000
 DEFAULT_TIMEOUT_SECONDS=15
 MAX_TIMEOUT_SECONDS=120
 WINDOWS_IMAGE_NAME_REGEX='^windows-image-[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9]+\.png$'
@@ -19,6 +15,14 @@ TEMP_PATH=""
 TEMP_ID=""
 ERROR_PATH=""
 BRIDGE_ROOT_ID=""
+BRIDGE_ROOT_FD=""
+MAX_SOURCE_BYTES=""
+MAX_ENCODED_BYTES=""
+MAX_DIMENSION=""
+MAX_PIXELS=""
+MAX_DECODED_BYTES=""
+MAX_LIST_FILES=""
+MAX_LIST_SECONDS=""
 
 cleanup_temporary_files() {
   if [[ -n "$TEMP_PATH" && -e "$TEMP_PATH" && ! -L "$TEMP_PATH" ]]; then
@@ -84,6 +88,7 @@ assert_bridge_root_path() {
 
 ensure_bridge_root() {
   assert_bridge_root_path
+  assert_private_cache_filesystem
   if bridge_root_is_symlink; then
     die "cache root must not be a symlink"
   fi
@@ -93,6 +98,19 @@ ensure_bridge_root() {
   chmod 700 -- "$BRIDGE_ROOT"
   [[ "$(stat -c '%a' -- "$BRIDGE_ROOT")" == 700 ]] || die "cache root permissions could not be set to 0700"
   BRIDGE_ROOT_ID="$(stat -Lc '%d:%i' -- "$BRIDGE_ROOT")"
+  assert_bridge_root_path
+  assert_private_cache_filesystem
+}
+
+pin_existing_bridge_root() {
+  assert_bridge_root_path
+  bridge_root_is_symlink && die "cache root must not be a symlink"
+  [[ -d "$BRIDGE_ROOT" ]] || die "cache root is not a directory"
+  assert_private_cache_filesystem
+  [[ "$(stat -c '%a' -- "$BRIDGE_ROOT")" == 700 ]] || die "cache root permissions are not 0700"
+  BRIDGE_ROOT_ID="$(stat -Lc '%d:%i' -- "$BRIDGE_ROOT")"
+  exec {BRIDGE_ROOT_FD}<"$BRIDGE_ROOT" || die "cache root could not be pinned"
+  [[ "$(stat -Lc '%d:%i' -- "/proc/self/fd/$BRIDGE_ROOT_FD")" == "$BRIDGE_ROOT_ID" ]] || die "cache root changed while it was being pinned"
   assert_bridge_root_path
 }
 
@@ -112,6 +130,48 @@ require_node20() {
   version="$($node_path -p 'process.versions.node')"
   major="${version%%.*}"
   [[ "$major" =~ ^[0-9]+$ && "$major" -ge 20 ]] || die "Node.js 20 or newer is required for PNG validation (found $version)"
+}
+
+load_security_limits() {
+  [[ -n "$MAX_SOURCE_BYTES" ]] && return 0
+  require_node20
+  local limits
+  limits="$("$node_path" "$PNG_VALIDATOR" --security-limits-tsv)" || die "PNG validator security limits could not be loaded"
+  IFS=$'\t' read -r MAX_SOURCE_BYTES MAX_DIMENSION MAX_PIXELS MAX_DECODED_BYTES MAX_LIST_FILES MAX_LIST_SECONDS \
+    <<< "$limits" || die "PNG validator returned incomplete security limits"
+  MAX_ENCODED_BYTES="$MAX_SOURCE_BYTES"
+  local value
+  for value in "$MAX_SOURCE_BYTES" "$MAX_DIMENSION" "$MAX_PIXELS" "$MAX_DECODED_BYTES" "$MAX_LIST_FILES" "$MAX_LIST_SECONDS"; do
+    [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "PNG validator returned invalid security limits"
+  done
+}
+
+cache_filesystem_type() {
+  if [[ "${BROWSER_WORKBENCH_BRIDGE_TESTING:-0}" == 1 && -n "${BROWSER_WORKBENCH_BRIDGE_TEST_FS_TYPE:-}" ]]; then
+    printf '%s\n' "$BROWSER_WORKBENCH_BRIDGE_TEST_FS_TYPE"
+    return
+  fi
+  local probe="$BRIDGE_ROOT"
+  while [[ ! -e "$probe" ]]; do
+    [[ "$probe" != / ]] || break
+    probe="$(dirname -- "$probe")"
+  done
+  stat -f -c '%T' -- "$probe"
+}
+
+cache_filesystem_is_unsafe() {
+  case "$1" in
+    9p|v9fs|drvfs|fuseblk|cifs|smb*|nfs*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+assert_private_cache_filesystem() {
+  local fs_type
+  fs_type="$(cache_filesystem_type)" || die "cache filesystem could not be inspected"
+  if cache_filesystem_is_unsafe "$fs_type"; then
+    die "cache filesystem '$fs_type' cannot guarantee private Linux file modes; use a native Linux XDG_CACHE_HOME"
+  fi
 }
 
 require_command() {
@@ -182,7 +242,8 @@ run_windows_capture() {
   set +e
   raw="$(timeout --signal=TERM --kill-after=2s "$timeout_seconds" "$POWERSHELL_EXECUTABLE" \
     -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -STA \
-    -File "$source_argument" "$mode" "$input_path" 2>"$ERROR_PATH")"
+    -File "$source_argument" "$mode" "$input_path" \
+    "$MAX_SOURCE_BYTES" "$MAX_DIMENSION" "$MAX_PIXELS" 2>"$ERROR_PATH")"
   status=$?
   set -e
   if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
@@ -260,7 +321,7 @@ capture_image() {
   if [[ "$mode" == file ]]; then
     validate_file_argument "$input_path"
   fi
-  require_node20
+  load_security_limits
   POWERSHELL_EXECUTABLE="$(find_powershell || true)"
   [[ -n "$POWERSHELL_EXECUTABLE" ]] || die "inbox Windows PowerShell 5.1 (powershell.exe) was not found"
   require_wsl_for_windows_access "$POWERSHELL_EXECUTABLE"
@@ -281,55 +342,100 @@ is_bridge_file_name() {
 }
 
 list_files() {
-  require_node20
+  load_security_limits
+  require_command timeout
+  require_command find
   local -a entries=()
+  local -a paths=()
   if [[ -e "$BRIDGE_ROOT" ]]; then
-    assert_bridge_root_path
-    bridge_root_is_symlink && die "cache root must not be a symlink"
-    [[ -d "$BRIDGE_ROOT" ]] || die "cache root is not a directory"
-    local candidate metadata
-    while IFS= read -r -d '' candidate; do
+    pin_existing_bridge_root
+    local candidate metadata name remaining
+    local candidate_count=0
+    local deadline=$((SECONDS + MAX_LIST_SECONDS))
+    coproc CACHE_ENUMERATION { timeout --signal=TERM --kill-after=1s "${MAX_LIST_SECONDS}s" find -H "/proc/self/fd/$BRIDGE_ROOT_FD" -mindepth 1 -maxdepth 1 -type f -name 'windows-image-*.png' -print0; }
+    local enumeration_fd
+    exec {enumeration_fd}<&"${CACHE_ENUMERATION[0]}"
+    local enumeration_pid="$CACHE_ENUMERATION_PID"
+    while IFS= read -r -d '' candidate <&"$enumeration_fd"; do
+      candidate_count=$((candidate_count + 1))
+      [[ "$candidate_count" -le "$MAX_LIST_FILES" ]] || die "cache contains more than the $MAX_LIST_FILES file enumeration limit"
+      [[ "$SECONDS" -lt "$deadline" ]] || die "cache listing exceeded the ${MAX_LIST_SECONDS}s work limit"
+      assert_bridge_root_path
       [[ -f "$candidate" && ! -L "$candidate" ]] || continue
       is_bridge_file_name "$candidate" || continue
-      if metadata="$($node_path "$PNG_VALIDATOR" --json "$candidate" 2>/dev/null)"; then
+      remaining=$((deadline - SECONDS))
+      if metadata="$(timeout --signal=TERM --kill-after=1s "${remaining}s" "$node_path" "$PNG_VALIDATOR" --json "$candidate" 2>/dev/null)"; then
+        name="$(basename -- "$candidate")"
         entries+=("$metadata")
+        paths+=("$BRIDGE_ROOT/$name")
       fi
-    done < <(find -P "$BRIDGE_ROOT" -mindepth 1 -maxdepth 1 -type f -name 'windows-image-*.png' -print0)
+    done
+    exec {enumeration_fd}<&-
+    local enumeration_status=0
+    wait "$enumeration_pid" || enumeration_status=$?
+    case "$enumeration_status" in
+      0) ;;
+      124|137) die "cache listing enumeration timed out after ${MAX_LIST_SECONDS}s" ;;
+      *) die "cache listing enumeration failed with status $enumeration_status" ;;
+    esac
+    assert_bridge_root_path
   elif [[ -L "$BRIDGE_ROOT" ]]; then
     die "cache root must not be a symlink"
   fi
-  "$node_path" - "${entries[@]}" <<'NODE'
-const files = process.argv.slice(2).map((entry) => JSON.parse(entry));
+  "$node_path" - "${#entries[@]}" "${entries[@]}" "${paths[@]}" <<'NODE'
+const count = Number(process.argv[2]);
+const entries = process.argv.slice(3, 3 + count);
+const paths = process.argv.slice(3 + count);
+const files = entries.map((entry, index) => ({ ...JSON.parse(entry), path: paths[index] }));
 process.stdout.write(`${JSON.stringify({ files })}\n`);
 NODE
 }
 
 cleanup_files() {
+  require_command timeout
+  require_command find
   local policy="$1"
   local older_days="${2:-}"
   local -a removed=()
   local candidate now cutoff mtime
   if [[ -e "$BRIDGE_ROOT" ]]; then
-    assert_bridge_root_path
-    bridge_root_is_symlink && die "cache root must not be a symlink"
-    [[ -d "$BRIDGE_ROOT" ]] || die "cache root is not a directory"
+    pin_existing_bridge_root
+    local candidate_count=0
+    local deadline=$((SECONDS + MAX_LIST_SECONDS))
     now="$(date +%s)"
     cutoff=$((now - older_days * 86400))
-    while IFS= read -r -d '' candidate; do
+    coproc CACHE_ENUMERATION { timeout --signal=TERM --kill-after=1s "${MAX_LIST_SECONDS}s" find -H "/proc/self/fd/$BRIDGE_ROOT_FD" -mindepth 1 -maxdepth 1 -type f -name 'windows-image-*.png' -print0; }
+    local enumeration_fd
+    exec {enumeration_fd}<&"${CACHE_ENUMERATION[0]}"
+    local enumeration_pid="$CACHE_ENUMERATION_PID"
+    while IFS= read -r -d '' candidate <&"$enumeration_fd"; do
+      candidate_count=$((candidate_count + 1))
+      [[ "$candidate_count" -le "$MAX_LIST_FILES" ]] || die "cache contains more than the $MAX_LIST_FILES file enumeration limit"
+      [[ "$SECONDS" -lt "$deadline" ]] || die "cache cleanup exceeded the ${MAX_LIST_SECONDS}s work limit"
+      assert_bridge_root_path
       [[ -f "$candidate" && ! -L "$candidate" ]] || continue
       is_bridge_file_name "$candidate" || continue
       if [[ "$policy" == older ]]; then
         mtime="$(stat -c '%Y' -- "$candidate")"
         [[ "$mtime" -lt "$cutoff" ]] || continue
       fi
-      if [[ "$(dirname -- "$candidate")" != "$BRIDGE_ROOT" ]]; then
-        die "refusing to remove a file outside the bridge cache root"
-      fi
       if [[ "$DRY_RUN" -eq 0 ]]; then
-        rm -f -- "$candidate"
+        if ! rm -- "$candidate" 2>/dev/null; then
+          [[ ! -e "$candidate" && ! -L "$candidate" ]] && continue
+          die "cache file could not be removed safely"
+        fi
       fi
-      removed+=("$candidate")
-    done < <(find -P "$BRIDGE_ROOT" -mindepth 1 -maxdepth 1 -type f -name 'windows-image-*.png' -print0)
+      removed+=("$BRIDGE_ROOT/$(basename -- "$candidate")")
+    done
+    exec {enumeration_fd}<&-
+    local enumeration_status=0
+    wait "$enumeration_pid" || enumeration_status=$?
+    case "$enumeration_status" in
+      0) ;;
+      124|137) die "cache cleanup enumeration timed out after ${MAX_LIST_SECONDS}s" ;;
+      *) die "cache cleanup enumeration failed with status $enumeration_status" ;;
+    esac
+    assert_bridge_root_path
   elif [[ -L "$BRIDGE_ROOT" ]]; then
     die "cache root must not be a symlink"
   fi
@@ -341,15 +447,19 @@ NODE
 }
 
 doctor() {
-  local wsl_status powershell_status root_status powershell_path
+  load_security_limits
+  local wsl_status powershell_status root_status powershell_path fs_type
   if is_wsl; then wsl_status="yes"; else wsl_status="no"; fi
   if powershell_path="$(find_powershell || true)"; then
     [[ -n "$powershell_path" ]] && powershell_status="available ($powershell_path)" || powershell_status="missing"
   else
     powershell_status="missing"
   fi
+  fs_type="$(cache_filesystem_type 2>/dev/null || true)"
   if [[ -L "$BRIDGE_ROOT" ]]; then
     root_status="unsafe symlink"
+  elif cache_filesystem_is_unsafe "$fs_type"; then
+    root_status="unsafe filesystem $fs_type"
   elif [[ -d "$BRIDGE_ROOT" ]]; then
     root_status="present"
   else
@@ -387,7 +497,7 @@ case "$COMMAND" in
   clipboard)
     [[ "${#COMMAND_ARGS[@]}" -eq 0 || ("${#COMMAND_ARGS[@]}" -eq 1 && -z "${COMMAND_ARGS[0]}") ]] || { usage; exit 2; }
     if [[ "$DRY_RUN" -eq 1 ]]; then
-      require_node20
+      load_security_limits
       printf '%s\n' "$("$node_path" - "$BRIDGE_ROOT" "$timeout_seconds" <<'NODE'
 const [cacheRoot, timeout] = process.argv.slice(2);
 process.stdout.write(`${JSON.stringify({ command: "clipboard", cache_root: cacheRoot, timeout_seconds: Number(timeout), dry_run: true })}\n`);
@@ -401,7 +511,7 @@ NODE
     [[ "${#COMMAND_ARGS[@]}" -eq 1 ]] || { usage; exit 2; }
     validate_file_argument "${COMMAND_ARGS[0]}"
     if [[ "$DRY_RUN" -eq 1 ]]; then
-      require_node20
+      load_security_limits
       printf '%s\n' "$("$node_path" - "$BRIDGE_ROOT" "$timeout_seconds" "${COMMAND_ARGS[0]}" <<'NODE'
 const [cacheRoot, timeout, inputPath] = process.argv.slice(2);
 process.stdout.write(`${JSON.stringify({ command: "file", cache_root: cacheRoot, timeout_seconds: Number(timeout), path: inputPath, dry_run: true })}\n`);
@@ -439,7 +549,7 @@ NODE
       cleanup_index=$((cleanup_index + 1))
     done
     [[ -n "$cleanup_policy" ]] || die "cleanup requires --all or --older-than-days N"
-    require_node20
+    load_security_limits
     cleanup_files "$cleanup_policy" "${cleanup_days:-0}"
     ;;
   doctor)

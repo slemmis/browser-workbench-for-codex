@@ -5,7 +5,15 @@
       "args": [
         "./scripts/launch-mcp.sh"
       ],
-      "cwd": "."
+      "cwd": ".",
+      "env": {
+        "BASH_ENV": "",
+        "BASHOPTS": "",
+        "BASH_XTRACEFD": "",
+        "ENV": "",
+        "NODE_OPTIONS": "",
+        "SHELLOPTS": ""
+      }
     }
   }
 }

@@ -4,7 +4,7 @@ Browser Workbench for Codex runs a local Playwright MCP server and includes an e
 
 ## Supported versions
 
-The latest public release line is supported. Unreleased development branches are validated before publication but are not release artifacts.
+The tagged `v0.1.0` release is the current published release. The `main` branch contains ongoing development and may be tested before a future release, but branch snapshots are not tagged release artifacts. Security fixes are applied to current development; reporters should identify whether an issue affects `v0.1.0`, `main`, or both.
 
 ## Reporting a vulnerability
 
