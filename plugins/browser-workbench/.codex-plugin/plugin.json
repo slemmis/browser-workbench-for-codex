@@ -1,0 +1,42 @@
+{
+  "name": "browser-workbench",
+  "version": "0.1.0",
+  "description": "Playwright-powered browser inspection, testing, and interaction for Codex on Linux and WSL.",
+  "author": {
+    "name": "Mikael Parkdahl",
+    "email": "michael.parkdahl@gmail.com",
+    "url": "https://github.com/slemmis"
+  },
+  "homepage": "https://github.com/slemmis/browser-workbench-for-codex",
+  "repository": "https://github.com/slemmis/browser-workbench-for-codex",
+  "license": "MIT",
+  "keywords": [
+    "browser",
+    "playwright",
+    "mcp",
+    "testing",
+    "wsl"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Browser Workbench for Codex",
+    "shortDescription": "Playwright-powered browser inspection, testing, and interaction.",
+    "longDescription": "Browser Workbench for Codex provides a pinned Playwright MCP server for browser inspection, testing, and controlled interaction on Linux and WSL, with isolated defaults, diagnostics, and real-browser smoke tests.",
+    "developerName": "Ekehöjd Assessment & Education AB",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Accessibility inspection",
+      "Console and network observation",
+      "Controlled browser interaction",
+      "Visual evidence"
+    ],
+    "websiteURL": "https://github.com/slemmis",
+    "brandColor": "#2563EB",
+    "defaultPrompt": [
+      "Inspect this page with an accessibility snapshot and relevant console errors.",
+      "Test the local app in an isolated headless Playwright browser and report failures.",
+      "Interact with this browser only after I confirm any sensitive action."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

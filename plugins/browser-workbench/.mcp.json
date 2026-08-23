@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "browser-workbench": {
+      "command": "bash",
+      "args": [
+        "./scripts/launch-mcp.sh"
+      ],
+      "cwd": "."
+    }
+  }
+}

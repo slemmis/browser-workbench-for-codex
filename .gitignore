@@ -1,0 +1,22 @@
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+
+# Generated packages, runtimes, browser caches, profiles, and smoke output
+*.zip
+**/.cache/
+**/.runtime/
+**/.playwright-mcp/
+**/browsers/
+**/profiles/
+**/output/
+**/outputs/
+**/__pycache__/
+**/.pytest_cache/

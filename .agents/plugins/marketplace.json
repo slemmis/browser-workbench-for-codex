@@ -1,0 +1,20 @@
+{
+  "name": "browser-workbench",
+  "interface": {
+    "displayName": "Browser Workbench for Codex"
+  },
+  "plugins": [
+    {
+      "name": "browser-workbench",
+      "source": {
+        "source": "local",
+        "path": "./plugins/browser-workbench"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
