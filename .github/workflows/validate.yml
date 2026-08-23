@@ -27,7 +27,11 @@ jobs:
           python3 -m json.tool plugins/browser-workbench/.codex-plugin/plugin.json >/dev/null
           python3 -m json.tool plugins/browser-workbench/.mcp.json >/dev/null
           bash -n plugins/browser-workbench/scripts/*.sh
+          node --check plugins/browser-workbench/scripts/validate-png.mjs
+          node --check plugins/browser-workbench/scripts/test-fixtures/fake-powershell.js
+          node --check plugins/browser-workbench/scripts/test-fixtures/generate-png.mjs
           python3 -m py_compile plugins/browser-workbench/scripts/mcp_smoke_test.py
+          bash plugins/browser-workbench/scripts/windows-image-bridge-test.sh
           package_one="$RUNNER_TEMP/browser-workbench-marketplace-one.zip"
           package_two="$RUNNER_TEMP/browser-workbench-marketplace-two.zip"
           bash plugins/browser-workbench/scripts/package-marketplace.sh "$package_one"

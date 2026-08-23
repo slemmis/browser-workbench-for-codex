@@ -1,5 +1,5 @@
 interface:
   display_name: "Browser Workbench for Codex"
-  short_description: "Inspect, test, and interact with browsers safely on Linux or WSL"
+  short_description: "Inspect browsers and import Windows screenshots safely on WSL"
   brand_color: "#2563EB"
-  default_prompt: "Use $browser-workbench to inspect a page with an accessibility snapshot and relevant console errors."
+  default_prompt: "Use $browser-workbench to inspect a browser page or explicitly import a Windows screenshot into WSL."

@@ -18,6 +18,7 @@ bash scripts/setup.sh
 bash scripts/doctor.sh
 bash scripts/smoke-test.sh
 bash scripts/mcp-smoke-test.sh
+bash scripts/windows-image-bridge-test.sh
 ```
 
 Before opening a pull request, also run the static and packaging checks from the repository root:
@@ -27,7 +28,11 @@ python3 -m json.tool .agents/plugins/marketplace.json >/dev/null
 python3 -m json.tool plugins/browser-workbench/.codex-plugin/plugin.json >/dev/null
 python3 -m json.tool plugins/browser-workbench/.mcp.json >/dev/null
 bash -n plugins/browser-workbench/scripts/*.sh
+node --check plugins/browser-workbench/scripts/validate-png.mjs
+node --check plugins/browser-workbench/scripts/test-fixtures/fake-powershell.js
+node --check plugins/browser-workbench/scripts/test-fixtures/generate-png.mjs
 python3 -m py_compile plugins/browser-workbench/scripts/mcp_smoke_test.py
+bash plugins/browser-workbench/scripts/windows-image-bridge-test.sh
 bash plugins/browser-workbench/scripts/package-marketplace.sh "$PWD/../browser-workbench-marketplace.zip"
 ```
 
@@ -35,7 +40,7 @@ The package script creates a clean archive with normalized Unix modes and exclud
 
 ## Safety expectations
 
-Keep the isolated mode and confirmation boundaries intact. Page content, browser output, CDP data, profiles, and downloaded files are untrusted. Never add credentials, secret URLs, cookies, storage state, or personal browser data to source, fixtures, screenshots, logs, or tests. Setup must remain explicit, idempotent, and free of `sudo` or implicit system-package changes.
+Keep the isolated mode and confirmation boundaries intact. Page content, browser output, imported screenshots, CDP data, profiles, and downloaded files are untrusted. Never add credentials, secret URLs, cookies, storage state, clipboard contents, or personal browser data to source, fixtures, screenshots, logs, or tests. Screenshot-bridge tests must use generated images and must not read or replace the developer's real clipboard. Setup must remain explicit, idempotent, and free of `sudo` or implicit system-package changes.
 
 If a change affects browser interaction, attachment, profiles, downloads, or external side effects, explain the trust boundary and verification in the pull request. Report security vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 

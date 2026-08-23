@@ -1,7 +1,7 @@
 {
   "name": "browser-workbench",
-  "version": "0.1.0",
-  "description": "Playwright-powered browser inspection, testing, and interaction for Codex on Linux and WSL.",
+  "version": "0.2.0",
+  "description": "Browser inspection, testing, and opt-in Windows screenshot import for Codex on Linux and WSL.",
   "author": {
     "name": "Mikael Parkdahl",
     "email": "michael.parkdahl@gmail.com",
@@ -14,20 +14,23 @@
     "browser",
     "playwright",
     "mcp",
+    "screenshot",
     "testing",
+    "windows",
     "wsl"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Browser Workbench for Codex",
-    "shortDescription": "Playwright-powered browser inspection, testing, and interaction.",
-    "longDescription": "Browser Workbench for Codex provides a pinned Playwright MCP server for browser inspection, testing, and controlled interaction on Linux and WSL, with isolated defaults, diagnostics, and real-browser smoke tests.",
+    "shortDescription": "Browser inspection and opt-in WSL screenshot import.",
+    "longDescription": "Browser Workbench for Codex provides a pinned Playwright MCP server for browser inspection, testing, and controlled interaction on Linux and WSL, plus an explicit Windows-to-WSL screenshot bridge with private local storage.",
     "developerName": "Ekehöjd Assessment & Education AB",
     "category": "Developer Tools",
     "capabilities": [
       "Accessibility inspection",
       "Console and network observation",
       "Controlled browser interaction",
+      "Opt-in Windows screenshot import",
       "Visual evidence"
     ],
     "websiteURL": "https://github.com/slemmis",
@@ -35,7 +38,7 @@
     "defaultPrompt": [
       "Inspect this page with an accessibility snapshot and relevant console errors.",
       "Test the local app in an isolated headless Playwright browser and report failures.",
-      "Interact with this browser only after I confirm any sensitive action."
+      "Import my Windows clipboard screenshot into WSL and inspect it."
     ]
   },
   "mcpServers": "./.mcp.json"

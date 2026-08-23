@@ -50,6 +50,15 @@ done
 
 if [[ -n "${DISPLAY:-}" ]]; then printf 'Display: DISPLAY configured\n'; else printf 'Display: DISPLAY not configured\n'; fi
 if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then printf 'WSLg: Wayland configured\n'; elif [[ -d /mnt/wslg ]]; then printf 'WSLg: runtime directory detected\n'; else printf 'WSLg: not detected\n'; fi
+if [[ -x "$SCRIPT_DIR/windows-image-bridge.sh" ]]; then
+  if [[ -r /proc/version ]] && grep -qiE 'microsoft|wsl' /proc/version && command -v powershell.exe >/dev/null 2>&1; then
+    printf 'Windows image bridge: available on explicit request\n'
+  else
+    printf 'Windows image bridge: helper present; clipboard/file import requires WSL and powershell.exe\n'
+  fi
+else
+  printf 'Windows image bridge: helper missing\n'
+fi
 
 if [[ -n "${BROWSER_WORKBENCH_RUNTIME_DIR:-}" ]]; then
   RUNTIME_DIR="$(resolve_path "$BROWSER_WORKBENCH_RUNTIME_DIR")"

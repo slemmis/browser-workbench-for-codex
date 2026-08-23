@@ -7,11 +7,26 @@ bash scripts/setup.sh
 bash scripts/doctor.sh
 bash scripts/smoke-test.sh
 bash scripts/mcp-smoke-test.sh
+bash scripts/windows-image-bridge-test.sh
 ```
 
 `setup.sh` requires Node.js 20 or newer, `npm`, and `npx`. It installs the pinned `@playwright/mcp@0.0.79` package into `${XDG_CACHE_HOME:-$HOME/.cache}/browser-workbench/runtime` by default, with the Chromium browser cache at the sibling `browsers/` path. Override either location with `BROWSER_WORKBENCH_RUNTIME_DIR` or `BROWSER_WORKBENCH_BROWSERS_PATH`. The package metadata declares the exact compatible Playwright version `1.63.0-alpha-2026-08-05`; setup reads that declaration and uses the installed Playwright CLI to install Chromium. It does not invoke `sudo` or install Linux system packages.
 
 `mcp-smoke-test.sh` is an optional verification helper and additionally requires `python3`; normal plugin operation does not.
+
+## Windows screenshot import
+
+The screenshot bridge is separate from the Playwright MCP transport and remains dormant until explicitly invoked. On WSL with inbox Windows PowerShell 5.1 available:
+
+```bash
+bash scripts/windows-image-bridge.sh doctor
+bash scripts/windows-image-bridge.sh clipboard
+bash scripts/windows-image-bridge.sh file 'C:\Users\me\Pictures\screenshot.png'
+```
+
+`doctor` and `--dry-run` do not read the clipboard. Clipboard mode accepts only an actual image. File mode accepts only an absolute local Windows drive path and uses literal-path semantics; it refuses network, device, reparse-point, alternate-data-stream, missing, oversized, unsupported, or malformed sources. Both modes normalize the image to a bounded PNG and return JSON containing its private Linux cache path and dimensions. WebP is explicitly unsupported by the inbox Windows PowerShell 5.1/System.Drawing path.
+
+Use `list` to enumerate valid bridge-managed images. Cleanup is confined to regular, normalized files directly inside the bridge cache and requires either `cleanup --older-than-days N` or `cleanup --all`; add `--dry-run` to preview. The bridge cache defaults to `${XDG_CACHE_HOME:-$HOME/.cache}/browser-workbench/windows-images` with `0700` directory and `0600` file permissions.
 
 The launcher accepts only these wrapper variables:
 
